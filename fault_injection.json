@@ -1,0 +1,9 @@
+{
+  "_example": { "device_id": 0, "test_unit_id": 31 },
+  "retrace_fails": [
+    { "device_id": 1, "test_unit_id": 31 },
+    { "device_id": 3, "test_unit_id": 61 },
+    { "device_id": 4, "test_unit_id": 1 },
+    { "device_id": 4, "test_unit_id": 61 }
+  ]
+}
