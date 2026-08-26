@@ -53,7 +53,7 @@ _TOOLS = {
 }
 
 # Identity — must match the seeded tag_info.json and test_config.json target_fw.
-_FW_VERSION = "3.3.1"
+_FW_VERSION = "3.3.2"
 _PRODUCT_NAME = "RBLN-CR13"
 _BOARD_TYPE = "2"
 _BOARD_REVISION = "9"
