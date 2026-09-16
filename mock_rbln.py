@@ -53,7 +53,7 @@ _TOOLS = {
 }
 
 # Identity — must match the seeded tag_info.json and test_config.json target_fw.
-_FW_VERSION = "3.3.2"
+_FW_VERSION = "3.3.3"
 _PRODUCT_NAME = "RBLN-CR13"
 _BOARD_TYPE = "2"
 _BOARD_REVISION = "9"
@@ -62,11 +62,15 @@ _UUID_SECRET = b"rbln-crx3-uuid-secret"  # mirrors core.util.uuid_gen
 # Fault injection — rblntrace retrace raises (non-zero exit) for each
 # (device_id, test_unit_id) listed in retrace_fails of fault_injection.json (next
 # to this script; override path with $MFG_MOCKUP_FAULT_CONFIG). Empty list = all pass.
+# An optional "err_code" on a rule (e.g. "0xC") also writes an rbln-smd coredump so
+# the engine bins the failure by FW err_code (0xC -> f31 ERR_HBM) instead of falling
+# back to the test_unit bin; without it the engine polls 30s for a coredump first.
 _FAULT_CONFIG_PATH = os.environ.get(
     "MFG_MOCKUP_FAULT_CONFIG",
     os.path.join(os.path.dirname(os.path.realpath(__file__)), "fault_injection.json"),
 )
 _TEST_UNIT_RE = re.compile(r"test_unit_(\d+)")
+_COREDUMP_DIR = "/var/log/rebellions"
 
 
 def _load_fault_config() -> dict:
@@ -83,17 +87,36 @@ def _load_fault_config() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _retrace_should_fail(device_id: int, test_unit_id: int | None) -> bool:
-    """True if fault_injection.json's ``retrace_fails`` lists this exact
-    (device_id, test_unit_id) pair. Empty/absent list -> never fails."""
+def _retrace_fault_rule(device_id: int, test_unit_id: int | None) -> dict | None:
+    """The ``retrace_fails`` rule matching this exact (device_id, test_unit_id)
+    pair, or None. Empty/absent list -> never fails."""
     if test_unit_id is None:
-        return False
+        return None
     for rule in _load_fault_config().get("retrace_fails", []):
         if not isinstance(rule, dict):
             continue
         if rule.get("device_id") == device_id and rule.get("test_unit_id") == test_unit_id:
-            return True
-    return False
+            return rule
+    return None
+
+
+def _write_coredump(device_id: int, err_code: object) -> None:
+    """Emit an rbln-smd style coredump carrying ``err_code`` so the engine's
+    fw.log parser bins the failure by FW error. Best-effort; errors go to stderr."""
+    try:
+        code = int(str(err_code), 0)
+    except (TypeError, ValueError):
+        print(f"[mock] invalid err_code {err_code!r}", file=sys.stderr)
+        return
+    path = os.path.join(
+        _COREDUMP_DIR, f"rbln{device_id}.{int(time.time())}_{os.getpid()}.coredump"
+    )
+    try:
+        os.makedirs(path, exist_ok=True)
+        with open(os.path.join(path, "fw.log"), "w", encoding="utf-8") as f:
+            f.write(f"[CL0] hils_set_err_reason: fw abort err_code 0x{code:X}\n")
+    except OSError as e:
+        print(f"[mock] coredump write failed ({path}): {e}", file=sys.stderr)
 
 # Reproduce a slow BMC: `ipmitool sdr list all` blocks this long (real BMC ~5-10s).
 # It is > BackgroundWorker's 5s stop-join, so a stop that lands mid-poll leaves the
@@ -373,7 +396,10 @@ def _rblntrace(args: list[str]) -> int:
     print(" - 0 -> 0")
     print(f"Overwrite group_id from 0 to {group} in cc_info")
     print(f"Run inference 10 with app_execution_time_s {int(app_time)}")
-    if _retrace_should_fail(dev_id, test_unit_id):  # config-driven fault injection → non-zero exit
+    fault = _retrace_fault_rule(dev_id, test_unit_id)
+    if fault is not None:  # config-driven fault injection → non-zero exit
+        if fault.get("err_code") is not None:
+            _write_coredump(dev_id, fault["err_code"])
         print("[RBLN_RT_ERR] inference aborted (mock fault injection)")
         print("Report: FAILED(rc -1)")
         return 1

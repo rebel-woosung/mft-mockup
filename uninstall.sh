@@ -5,9 +5,9 @@ set -euo pipefail
 
 BIN=/usr/local/bin
 SYSBIN=/usr/bin
-RBLN_TOOLS=(rbln-smi rbln rbln-smcif rbln-flash rbln-security rbln-spdm rblntrace)
+RBLN_TOOLS=(rbln-smi rbln rbln-smcif rbln-flash rbln-security rbln-spdm rbln-prog rblntrace)
 SYS_TOOLS=(ipmitool dmidecode lspci systemctl)
-FW_VERS=(3.3.0 3.3.1)
+FW_VERS=(3.3.3)
 
 for t in "${RBLN_TOOLS[@]}" "${SYS_TOOLS[@]}"; do
   for dir in "$BIN" "$SYSBIN"; do
@@ -28,6 +28,11 @@ for v in "${FW_VERS[@]}"; do
     fi
   done
 done
+
+# Mock-written fault-injection coredumps. The dir itself is only removed when it
+# ends up empty, so a real rbln-smd's coredumps are never taken with it.
+rm -rf /var/log/rebellions/rbln*.coredump 2>/dev/null || true
+rmdir /var/log/rebellions 2>/dev/null && echo "removed /var/log/rebellions" || true
 
 rm -rf /tmp/mfg_mockup_state
 echo "done."

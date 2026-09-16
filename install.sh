@@ -11,6 +11,7 @@ set -euo pipefail
 
 BIN=/usr/local/bin
 SYSBIN=/usr/bin
+COREDUMP_DIR=/var/log/rebellions
 SRC="$(cd "$(dirname "$0")" && pwd)/mock_rbln.py"
 
 # Vendor tools: linked into BOTH /usr/local/bin (PATH) and /usr/bin (find probe
@@ -22,7 +23,7 @@ SYS_TOOLS=(ipmitool dmidecode lspci systemctl)
 
 # Firmware versions to stub. Must cover whatever test_config.json points at
 # (cp_fw_update.path / smc_fw_update.path) so CheckCp/SmcFwImage's find passes.
-FW_VERS=(3.3.0 3.3.1)
+FW_VERS=(3.3.3)
 
 chmod +x "$SRC"
 
@@ -47,6 +48,14 @@ for v in "${FW_VERS[@]}"; do
              "/lib/firmware/rebellions/$v/smc/rebel-smc.bin"
   echo "stubbed /lib/firmware/rebellions/$v/{cp/rebel-q-cp.bin,smc/rebel-smc.bin}"
 done
+
+# Coredump dir for fault_injection err_code rules. The engine globs
+# /var/log/rebellions/rbln<id>.*.coredump, but rblntrace runs unprivileged, so the
+# dir must pre-exist and be owned by the invoking user or the write is denied and
+# the failure falls back to the test_unit bin instead of the FW err_code bin.
+sudo mkdir -p "$COREDUMP_DIR"
+sudo chown "$(id -u):$(id -g)" "$COREDUMP_DIR"
+echo "prepared $COREDUMP_DIR (owner $(id -un)) for fault-injection coredumps"
 
 echo
 echo "done. verify:  rbln-smi -g -j   |   lspci -D -d 1eff:   |   rbln ver -d 0"
