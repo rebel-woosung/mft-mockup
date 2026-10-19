@@ -70,6 +70,7 @@ _FAULT_CONFIG_PATH = os.environ.get(
     os.path.join(os.path.dirname(os.path.realpath(__file__)), "fault_injection.json"),
 )
 _TEST_UNIT_RE = re.compile(r"test_unit_(\d+)")
+_PCIE_PHASE_RE = re.compile(r"_pcie_(pre|post)")
 _COREDUMP_DIR = "/var/log/rebellions"
 
 
@@ -87,12 +88,12 @@ def _load_fault_config() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _retrace_fault_rule(device_id: int, test_unit_id: int | None) -> dict | None:
-    """The ``retrace_fails`` rule matching this exact (device_id, test_unit_id)
+def _fault_rule(section: str, device_id: int, test_unit_id: int | None) -> dict | None:
+    """The ``section`` rule matching this exact (device_id, test_unit_id)
     pair, or None. Empty/absent list -> never fails."""
     if test_unit_id is None:
         return None
-    for rule in _load_fault_config().get("retrace_fails", []):
+    for rule in _load_fault_config().get(section, []):
         if not isinstance(rule, dict):
             continue
         if rule.get("device_id") == device_id and rule.get("test_unit_id") == test_unit_id:
@@ -162,6 +163,12 @@ _SMC_ADC = (
     ("SYS_1P8V", 1801, 2937), ("AVDD_1P2V", 1214, 2783), ("SYS_3P3V", 3288, 0),
     ("PCIE_VP_0P85V", 865, 3015), ("PCIE1_VP_0P85V", 865, 0), ("SYS_5P0V", 5028, 0),
     ("LDO_3P3V", 3353, 0), ("VIN_AUX_12V", 12164, 0),
+)
+_ECNT_GROUP5_COUNTERS = (
+    "L0 to Recovery Entry", "L1 to Recovery Entry", "TX L0s Entry", "RX L0s Entry",
+    "ASPM L1 reject", "L1 Entry", "L1 CPM", "L1.1 Entry", "L1.2 Entry",
+    "L1 short duration", "L1.2 abort", "L2 Entry", "Speed Change", "Link width Change",
+    "Reserved",
 )
 
 
@@ -288,6 +295,10 @@ def _rbln(args: list[str]) -> int:
             "aword_repair_map": {"total_channels_repaired": 0},
         }, indent=2))
         return 0
+    if sub == "pcie":
+        if len(args) > 1 and args[1] == "stat_histo":
+            _print_stat_histo(_index_for_bus(_opt(args, "-s", "")), _opt(args, "-o", ""))
+        return 0
     return 0
 
 
@@ -398,7 +409,7 @@ def _rblntrace(args: list[str]) -> int:
     print(" - 0 -> 0")
     print(f"Overwrite group_id from 0 to {group} in cc_info")
     print(f"Run inference 10 with app_execution_time_s {int(app_time)}")
-    fault = _retrace_fault_rule(dev_id, test_unit_id)
+    fault = _fault_rule("retrace_fails", dev_id, test_unit_id)
     if fault is not None:  # config-driven fault injection → non-zero exit
         if fault.get("err_code") is not None:
             _write_coredump(dev_id, fault["err_code"])
@@ -579,6 +590,25 @@ def _print_smc_pwr(dev_id: int) -> None:
         if key in ("rebel_core0_voltage", "rebel_core1_voltage"):
             val = core_v
         print(f"  {key} ({unit}) : {val}")
+
+
+def _print_stat_histo(dev_id: int | None, out_path: str) -> None:
+    """One ECNT Group 5 snapshot; a ``link_downgrades`` rule bumps its counter in the post capture."""
+    counts = {"Speed Change": 0, "Link width Change": 0}
+    tu_match = _TEST_UNIT_RE.search(out_path)
+    phase_match = _PCIE_PHASE_RE.search(out_path)
+    if dev_id is not None and tu_match and phase_match and phase_match.group(1) == "post":
+        rule = _fault_rule("link_downgrades", dev_id, int(tu_match.group(1)))
+        if rule is not None:
+            kind = "Link width Change" if rule.get("kind") == "width" else "Speed Change"
+            counts[kind] = 1
+
+    print("PCIe Stat Histogram: On")
+    print(" Max Histo Num - 10")
+    print("Idx: 0, Timestamp: 1001")
+    print("\tECNT Group 5 : Layer1 Non-Error Counter [RAM] Common Lane")
+    for label in _ECNT_GROUP5_COUNTERS:
+        print(f"\t\t{label:>25} : {counts.get(label, 0)}")
 
 
 def _print_flash(*, is_cp: bool, image_path: str) -> None:
