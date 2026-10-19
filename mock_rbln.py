@@ -7,7 +7,7 @@ rebellions_server_run_engine_v2's tests/logs, so the SRT engine parses them like
 the real tools.
 
 Tools: rbln-smi, rbln, rbln-smcif, rbln-flash, rbln-security, rbln-spdm,
-rblntrace, ipmitool, dmidecode, lspci, systemctl.
+rblntrace, ipmitool, dmidecode, lspci, setpci, systemctl.
 
 8 fake NPUs, all healthy → the full SRT flow reaches an all-PASS verdict.
 `rblntrace retrace` runs for its ``--app_execution_time`` (real behaviour). HBM
@@ -44,16 +44,16 @@ _DEVICE_TAGS = (
     (9, "52628071", "267685500000010"),
     (10, "52628063", "267685500000002"),
     (11, "52628069", "267685500000008"),
-    #(12, "52628070", "267685500000009"), # for nore present
+    #(12, "52628070", "267685500000009"), # for not present
 )
 _SLOTS = tuple(t[0] for t in _DEVICE_TAGS)
 _TOOLS = {
     "rbln-smi", "rbln", "rbln-smcif", "rbln-flash", "rbln-security", "rbln-spdm",
-    "rbln-prog", "rblntrace", "ipmitool", "dmidecode", "lspci", "systemctl",
+    "rbln-prog", "rblntrace", "ipmitool", "dmidecode", "lspci", "setpci", "systemctl",
 }
 
 # Identity — must match the seeded tag_info.json and test_config.json target_fw.
-_FW_VERSION = "3.3.3"
+_FW_VERSION = "3.3.4"
 _PRODUCT_NAME = "RBLN-CR13"
 _BOARD_TYPE = "2"
 _BOARD_REVISION = "9"
@@ -186,6 +186,7 @@ def main() -> int:
         "ipmitool": _ipmitool,
         "dmidecode": _dmidecode,
         "lspci": _lspci,
+        "setpci": _setpci,
         "systemctl": _systemctl,
     }.get(tool)
     if handler is None:
@@ -198,10 +199,11 @@ def _rbln_smi(args: list[str]) -> int:
     # `rbln-smi group -c G -a N` (separate) / `group -d G` (combine) — RSD state.
     if args and args[0] == "group":
         groups = _load_groups()
-        if "-c" in args:  # create group G → place device (G-1) into it (unique)
+        if "-c" in args:  # create group G → move NPU N (`-a`) into it
             gid = _int_opt(args, "-c", 0)
-            if 1 <= gid <= _NUM_DEVICES:
-                groups[gid - 1] = gid
+            npu = _int_opt(args, "-a", -1)
+            if gid >= 1 and npu in groups:
+                groups[npu] = gid
         elif "-d" in args:  # dissolve group G → its members return to RSD0
             gid = _int_opt(args, "-d", 0)
             for devid, g in list(groups.items()):
@@ -491,6 +493,23 @@ def _lspci(args: list[str]) -> int:
             print(f"{_bus_id(i)} Processing accelerators: Rebellions Inc Device 1eff:0001")
         return 0
     return _exec_real("lspci", args)  # unrelated query → real lspci
+
+
+def _setpci(args: list[str]) -> int:
+    # PCIe link pre-check and AER clear on a mock card: healthy reads, writes succeed.
+    i = _index_for_bus(_opt(args, "-s", ""))
+    if i is None:
+        return _exec_real("setpci", args)
+    register = args[-1]
+    if "=" in register:
+        return 0
+    print({
+        "0x0.l": "00011eff",
+        "VENDOR_ID.w": "1eff",
+        "CAP_EXP+0x0a.W": "0019",
+        "ECAP_AER+0x10.L": "00002000",
+    }.get(register, "0000"))
+    return 0
 
 
 def _systemctl(args: list[str]) -> int:

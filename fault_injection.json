@@ -5,6 +5,7 @@
     { "device_id": 1, "test_unit_id": 31, "err_code": "0xC" },
     { "device_id": 3, "test_unit_id": 61 },
     { "device_id": 4, "test_unit_id": 1 },
-    { "device_id": 4, "test_unit_id": 61 }
+    { "device_id": 4, "test_unit_id": 61 },
+    { "device_id": 2, "test_unit_id": 81 }
   ]
 }

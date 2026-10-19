@@ -19,11 +19,11 @@ SRC="$(cd "$(dirname "$0")" && pwd)/mock_rbln.py"
 RBLN_TOOLS=(rbln-smi rbln rbln-smcif rbln-flash rbln-security rbln-spdm rbln-prog rblntrace)
 # System tools: /usr/local/bin only (PATH-shadow; the mock defers non-rebellions
 # calls to the real binary). Do NOT put these in /usr/bin.
-SYS_TOOLS=(ipmitool dmidecode lspci systemctl)
+SYS_TOOLS=(ipmitool dmidecode lspci setpci systemctl)
 
-# Firmware versions to stub. Must cover whatever test_config.json points at
-# (cp_fw_update.path / smc_fw_update.path) so CheckCp/SmcFwImage's find passes.
-FW_VERS=(3.3.3)
+# Firmware version to stub — single source is _FW_VERSION in mock_rbln.py.
+FW_VER="$(sed -n 's/^_FW_VERSION = "\(.*\)"$/\1/p' "$SRC")"
+[ -n "$FW_VER" ] || { echo "cannot read _FW_VERSION from $SRC" >&2; exit 1; }
 
 chmod +x "$SRC"
 
@@ -42,12 +42,10 @@ link_into "$BIN" "${RBLN_TOOLS[@]}" "${SYS_TOOLS[@]}"
 link_into "$SYSBIN" "${RBLN_TOOLS[@]}"
 
 # Dummy firmware images so CheckCpFwImage / CheckSmcFwImage (find ... -name *.bin) pass.
-for v in "${FW_VERS[@]}"; do
-  sudo mkdir -p "/lib/firmware/rebellions/$v/cp" "/lib/firmware/rebellions/$v/smc"
-  sudo touch "/lib/firmware/rebellions/$v/cp/rebel-q-cp.bin" \
-             "/lib/firmware/rebellions/$v/smc/rebel-smc.bin"
-  echo "stubbed /lib/firmware/rebellions/$v/{cp/rebel-q-cp.bin,smc/rebel-smc.bin}"
-done
+sudo mkdir -p "/lib/firmware/rebellions/$FW_VER/cp" "/lib/firmware/rebellions/$FW_VER/smc"
+sudo touch "/lib/firmware/rebellions/$FW_VER/cp/rebel-q-cp.bin" \
+           "/lib/firmware/rebellions/$FW_VER/smc/rebel-smc.bin"
+echo "stubbed /lib/firmware/rebellions/$FW_VER/{cp/rebel-q-cp.bin,smc/rebel-smc.bin}"
 
 # Coredump dir for fault_injection err_code rules. The engine globs
 # /var/log/rebellions/rbln<id>.*.coredump, but rblntrace runs unprivileged, so the
@@ -63,4 +61,4 @@ echo "uninstall:     ./uninstall.sh"
 echo
 echo "STILL REQUIRED on the engine side (cannot be mocked at the CLI):"
 echo "  1) seed tag_info.json (operator barcodes) — see README."
-echo "  2) comment out the 3 sysfs/debugfs touches — see README."
+echo "  2) comment out the 4 sysfs/debugfs touches — see README."

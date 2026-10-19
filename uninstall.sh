@@ -6,8 +6,10 @@ set -euo pipefail
 BIN=/usr/local/bin
 SYSBIN=/usr/bin
 RBLN_TOOLS=(rbln-smi rbln rbln-smcif rbln-flash rbln-security rbln-spdm rbln-prog rblntrace)
-SYS_TOOLS=(ipmitool dmidecode lspci systemctl)
-FW_VERS=(3.3.3)
+SYS_TOOLS=(ipmitool dmidecode lspci setpci systemctl)
+SRC="$(cd "$(dirname "$0")" && pwd)/mock_rbln.py"
+FW_VER="$(sed -n 's/^_FW_VERSION = "\(.*\)"$/\1/p' "$SRC")"
+[ -n "$FW_VER" ] || { echo "cannot read _FW_VERSION from $SRC" >&2; exit 1; }
 
 for t in "${RBLN_TOOLS[@]}" "${SYS_TOOLS[@]}"; do
   for dir in "$BIN" "$SYSBIN"; do
@@ -18,15 +20,13 @@ for t in "${RBLN_TOOLS[@]}" "${SYS_TOOLS[@]}"; do
   done
 done
 
-for v in "${FW_VERS[@]}"; do
-  for f in "cp/rebel-q-cp.bin" "smc/rebel-smc.bin"; do
-    p="/lib/firmware/rebellions/$v/$f"
-    # only remove our empty stub, never a real firmware image
-    if [ -f "$p" ] && [ ! -s "$p" ]; then
-      sudo rm -f "$p"
-      echo "removed stub $p"
-    fi
-  done
+for f in "cp/rebel-q-cp.bin" "smc/rebel-smc.bin"; do
+  p="/lib/firmware/rebellions/$FW_VER/$f"
+  # only remove our empty stub, never a real firmware image
+  if [ -f "$p" ] && [ ! -s "$p" ]; then
+    sudo rm -f "$p"
+    echo "removed stub $p"
+  fi
 done
 
 # Mock-written fault-injection coredumps. The dir itself is only removed when it
