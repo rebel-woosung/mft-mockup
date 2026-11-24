@@ -7,7 +7,7 @@ rebellions_server_run_engine_v2's tests/logs, so the SRT engine parses them like
 the real tools.
 
 Tools: rbln-smi, rbln, rbln-smcif, rbln-flash, rbln-security, rbln-spdm,
-rblntrace, ipmitool, dmidecode, lspci, setpci, systemctl.
+rblntrace, ipmitool, dmidecode, lspci, setpci, systemctl, modprobe.
 
 8 fake NPUs, all healthy → the full SRT flow reaches an all-PASS verdict.
 `rblntrace retrace` runs for its ``--app_execution_time`` (real behaviour). HBM
@@ -50,10 +50,14 @@ _SLOTS = tuple(t[0] for t in _DEVICE_TAGS)
 _TOOLS = {
     "rbln-smi", "rbln", "rbln-smcif", "rbln-flash", "rbln-security", "rbln-spdm",
     "rbln-prog", "rblntrace", "ipmitool", "dmidecode", "lspci", "setpci", "systemctl",
+    "modprobe",
 }
+_SWITCH_USP_BDF = "0000:f1:00.0"
+_FAN_ZONES = (0, 0, 0, 0, 1, 1, 1, 1, 2, 3)
+_DEFAULT_FAN_DUTY = 50
 
 # Identity — must match the seeded tag_info.json and test_config.json target_fw.
-_FW_VERSION = "3.3.4"
+_FW_VERSION = "3.7.0~rc3"
 _PRODUCT_NAME = "RBLN-CR13"
 _BOARD_TYPE = "2"
 _BOARD_REVISION = "9"
@@ -103,7 +107,7 @@ def _fault_rule(section: str, device_id: int, test_unit_id: int | None) -> dict 
 
 def _write_coredump(device_id: int, err_code: object) -> None:
     """Emit an rbln-smd style coredump carrying ``err_code`` so the engine's
-    fw.log parser bins the failure by FW error. Best-effort; errors go to stderr."""
+    meta / fw.log parser bins the failure by FW error. Best-effort; errors go to stderr."""
     try:
         code = int(str(err_code), 0)
     except (TypeError, ValueError):
@@ -115,7 +119,9 @@ def _write_coredump(device_id: int, err_code: object) -> None:
     try:
         os.makedirs(path, exist_ok=True)
         with open(os.path.join(path, "fw.log"), "w", encoding="utf-8") as f:
-            f.write(f"[CL0] hils_set_err_reason: fw abort err_code 0x{code:X}\n")
+            f.write(f"[CL0] hils_set_err_reason: err_code 0x{code:X}\n")
+        with open(os.path.join(path, "meta"), "w", encoding="utf-8") as f:
+            f.write(f"cp_err_reason = 0x{code:08X}\n")
     except OSError as e:
         print(f"[mock] coredump write failed ({path}): {e}", file=sys.stderr)
 
@@ -195,6 +201,7 @@ def main() -> int:
         "lspci": _lspci,
         "setpci": _setpci,
         "systemctl": _systemctl,
+        "modprobe": _modprobe,
     }.get(tool)
     if handler is None:
         return 0
@@ -434,7 +441,9 @@ def _rblntrace(args: list[str]) -> int:
 
 
 def _ipmitool(args: list[str]) -> int:
-    if args and args[0] == "raw":  # fan control — just succeed
+    if args and args[0] == "raw":
+        if args[1:5] == ["0x30", "0x70", "0x66", "0x01"] and len(args) >= 7:
+            _save_fan_duty(int(args[5], 0), int(args[6], 0))
         return 0
     if args[:3] == ["sdr", "list", "all"]:
         # Slow, uninterruptible BMC read — the engine can't kill this mid-call, so a
@@ -443,12 +452,10 @@ def _ipmitool(args: list[str]) -> int:
             time.sleep(_IPMI_SDR_DELAY_SEC)
         for label, val in (("CPU1 Temp", 55), ("CPU2 Temp", 57), ("Inlet Temp", 24), ("System Temp", 40)):
             print(f"{label:<16}| {val} degrees C | ok")
-        for i in range(1, 11):
-            print(f"FAN{i:<13}| {10000 + i * 100} RPM | ok")
+        _print_fan_rpms()
         return 0
     if args[:2] == ["sdr", "list"]:  # `sdr list` (get_fan_rpm greps for RPM)
-        for i in range(1, 11):
-            print(f"FAN{i:<13}| {10000 + i * 100} RPM | ok")
+        _print_fan_rpms()
         return 0
     if args[:3] == ["dcmi", "power", "reading"]:  # DCMI power (xlsx v2.2.2)
         # Engine's read_dcmi_power parses the four `<N> Watts` lines; the trailer
@@ -487,9 +494,19 @@ def _dmidecode(args: list[str]) -> int:
 def _lspci(args: list[str]) -> int:
     # `lspci -s <bdf>` (engine's per-device probe, log-only) → that card's line.
     if "-s" in args:
-        i = _index_for_bus(_opt(args, "-s", ""))
+        bus = _opt(args, "-s", "")
+        verbose = "-vvv" in args
+        if bus == _SWITCH_USP_BDF:
+            print(f"{bus} PCI bridge: Mock PCIe switch upstream port")
+            if verbose:
+                print("\tCapabilities: [68] Express (v2) Upstream Port, MSI 00")
+            return 0
+        i = _index_for_bus(bus)
         if i is not None:
             print(f"{_bus_id(i)} Processing accelerators: Rebellions Inc Device 1eff:0001")
+            if verbose:
+                print("\tCapabilities: [70] Express (v2) Endpoint, MSI 00")
+                print("\t\tLnkSta:\tSpeed 32GT/s, Width x16")
             return 0
         return _exec_real("lspci", args)
     # `lspci -D -d 1eff:` (engine device inventory) → the 8 mock cards. The engine
@@ -508,8 +525,8 @@ def _lspci(args: list[str]) -> int:
 
 def _setpci(args: list[str]) -> int:
     # PCIe link pre-check and AER clear on a mock card: healthy reads, writes succeed.
-    i = _index_for_bus(_opt(args, "-s", ""))
-    if i is None:
+    bus = _opt(args, "-s", "")
+    if _index_for_bus(bus) is None and bus != _SWITCH_USP_BDF:
         return _exec_real("setpci", args)
     register = args[-1]
     if "=" in register:
@@ -518,6 +535,7 @@ def _setpci(args: list[str]) -> int:
         "0x0.l": "00011eff",
         "VENDOR_ID.w": "1eff",
         "CAP_EXP+0x0a.W": "0019",
+        "CAP_EXP+0x12.w": "2105",
         "ECAP_AER+0x10.L": "00002000",
     }.get(register, "0000"))
     return 0
@@ -537,6 +555,12 @@ def _systemctl(args: list[str]) -> int:
         print(f"[mock] systemctl {args[0]} suppressed")
         return 0
     return _exec_real("systemctl", args)
+
+
+def _modprobe(args: list[str]) -> int:
+    if "rebellions" in args:
+        return 0
+    return _exec_real("modprobe", args)
 
 
 # --- output builders -------------------------------------------------------
@@ -605,7 +629,7 @@ def _print_stat_histo(dev_id: int | None, out_path: str) -> None:
 
     print("PCIe Stat Histogram: On")
     print(" Max Histo Num - 10")
-    print("Idx: 0, Timestamp: 1001")
+    print(f"Idx: {_next_stat_histo_idx(dev_id)}, Timestamp: {int(time.monotonic() * 1000)}")
     print("\tECNT Group 5 : Layer1 Non-Error Counter [RAM] Common Lane")
     for label in _ECNT_GROUP5_COUNTERS:
         print(f"\t\t{label:>25} : {counts.get(label, 0)}")
@@ -740,6 +764,38 @@ def _save_nvm(slot: int, kv: dict) -> None:
     data = _load_nvm(slot)
     data.update(kv)
     _write_state(f"nvm_{slot}.json", json.dumps(data))
+
+
+def _load_fan_duties() -> dict[int, int]:
+    raw = _read_state("fan_duty.json")
+    if raw:
+        try:
+            return {int(k): int(v) for k, v in json.loads(raw).items()}
+        except (json.JSONDecodeError, ValueError, AttributeError):
+            pass
+    return {}
+
+
+def _save_fan_duty(zone: int, duty: int) -> None:
+    duties = _load_fan_duties()
+    duties[zone] = duty
+    _write_state("fan_duty.json", json.dumps({str(k): v for k, v in duties.items()}))
+
+
+def _print_fan_rpms() -> None:
+    duties = _load_fan_duties()
+    for fan, zone in enumerate(_FAN_ZONES, start=1):
+        rpm = 1500 + duties.get(zone, _DEFAULT_FAN_DUTY) * 150 + fan * 20
+        print(f"FAN{fan:<13}| {rpm} RPM | ok")
+
+
+def _next_stat_histo_idx(dev_id: int | None) -> int:
+    if dev_id is None:
+        return 0
+    raw = _read_state(f"stat_histo_idx_{dev_id}")
+    idx = int(raw) + 1 if raw.isdigit() else 0
+    _write_state(f"stat_histo_idx_{dev_id}", str(idx))
+    return idx
 
 
 # --- temp ramp (35→95°C sawtooth, 60s period) ------------------------------

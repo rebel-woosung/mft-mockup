@@ -6,7 +6,8 @@ set -euo pipefail
 BIN=/usr/local/bin
 SYSBIN=/usr/bin
 RBLN_TOOLS=(rbln-smi rbln rbln-smcif rbln-flash rbln-security rbln-spdm rbln-prog rblntrace)
-SYS_TOOLS=(ipmitool dmidecode lspci setpci systemctl)
+SYS_TOOLS=(ipmitool dmidecode lspci setpci systemctl modprobe)
+WORKLOAD_DIR="${WORKLOAD_DIR:-/data/rbcn/rb-srt-main-engine/workload}"
 SRC="$(cd "$(dirname "$0")" && pwd)/mock_rbln.py"
 FW_VER="$(sed -n 's/^_FW_VERSION = "\(.*\)"$/\1/p' "$SRC")"
 [ -n "$FW_VER" ] || { echo "cannot read _FW_VERSION from $SRC" >&2; exit 1; }
@@ -28,6 +29,11 @@ for f in "cp/rebel-q-cp.bin" "smc/rebel-smc.bin"; do
     echo "removed stub $p"
   fi
 done
+
+if [ -d "$WORKLOAD_DIR" ]; then
+  sudo find "$WORKLOAD_DIR" -maxdepth 1 -type f -name '*.bin' -empty -delete
+  sudo rmdir "$WORKLOAD_DIR" 2>/dev/null && echo "removed $WORKLOAD_DIR" || echo "removed empty workload stubs in $WORKLOAD_DIR"
+fi
 
 # Mock-written fault-injection coredumps. The dir itself is only removed when it
 # ends up empty, so a real rbln-smd's coredumps are never taken with it.

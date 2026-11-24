@@ -19,11 +19,36 @@ SRC="$(cd "$(dirname "$0")" && pwd)/mock_rbln.py"
 RBLN_TOOLS=(rbln-smi rbln rbln-smcif rbln-flash rbln-security rbln-spdm rbln-prog rblntrace)
 # System tools: /usr/local/bin only (PATH-shadow; the mock defers non-rebellions
 # calls to the real binary). Do NOT put these in /usr/bin.
-SYS_TOOLS=(ipmitool dmidecode lspci setpci systemctl)
+SYS_TOOLS=(ipmitool dmidecode lspci setpci systemctl modprobe)
 
 # Firmware version to stub — single source is _FW_VERSION in mock_rbln.py.
 FW_VER="$(sed -n 's/^_FW_VERSION = "\(.*\)"$/\1/p' "$SRC")"
 [ -n "$FW_VER" ] || { echo "cannot read _FW_VERSION from $SRC" >&2; exit 1; }
+
+ENGINE_DIR="${ENGINE_DIR:-$HOME/workspace/rebellions_server_run_engine_v2}"
+WORKLOAD_DIR="${WORKLOAD_DIR:-/data/rbcn/rb-srt-main-engine/workload}"
+CR13_JSON="$ENGINE_DIR/var/lib/rbcn/rb-srt-main-engine/config/workloads/CR13.json"
+[ -f "$CR13_JSON" ] || CR13_JSON="$ENGINE_DIR/asset/var/lib/config/workloads/CR13.json"
+[ -f "$CR13_JSON" ] || { echo "cannot find CR13.json under $ENGINE_DIR (set ENGINE_DIR)" >&2; exit 1; }
+mapfile -t WORKLOADS < <(PYTHONPATH="$ENGINE_DIR/src" python3 - "$CR13_JSON" <<'PY'
+import json
+import sys
+
+from rb_sr_engine.core.util.cipher_util import decrypt_name
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    config = json.load(f)
+names = {
+    decrypt_name(name)
+    for stage in config.values()
+    if isinstance(stage, dict)
+    for workload in stage.get("workloads", [])
+    for name in workload.get("filename", [])
+}
+print("\n".join(sorted(names)))
+PY
+)
+[ "${#WORKLOADS[@]}" -gt 0 ] && [ -n "${WORKLOADS[0]}" ] || { echo "no workload names read from $CR13_JSON" >&2; exit 1; }
 
 chmod +x "$SRC"
 
@@ -47,6 +72,12 @@ sudo touch "/lib/firmware/rebellions/$FW_VER/cp/rebel-q-cp.bin" \
            "/lib/firmware/rebellions/$FW_VER/smc/rebel-smc.bin"
 echo "stubbed /lib/firmware/rebellions/$FW_VER/{cp/rebel-q-cp.bin,smc/rebel-smc.bin}"
 
+sudo mkdir -p "$WORKLOAD_DIR"
+for name in "${WORKLOADS[@]}"; do
+  [ -e "$WORKLOAD_DIR/$name" ] || sudo touch "$WORKLOAD_DIR/$name"
+done
+echo "stubbed ${#WORKLOADS[@]} workload files under $WORKLOAD_DIR (from $CR13_JSON)"
+
 # Coredump dir for fault_injection err_code rules. The engine globs
 # /var/log/rebellions/rbln<id>.*.coredump, but rblntrace runs unprivileged, so the
 # dir must pre-exist and be owned by the invoking user or the write is denied and
@@ -61,4 +92,4 @@ echo "uninstall:     ./uninstall.sh"
 echo
 echo "STILL REQUIRED on the engine side (cannot be mocked at the CLI):"
 echo "  1) seed tag_info.json (operator barcodes) — see README."
-echo "  2) comment out the 4 sysfs/debugfs touches — see README."
+echo "  2) comment out the 6 sysfs/debugfs touches — see README."
